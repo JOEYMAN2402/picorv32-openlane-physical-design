@@ -44,7 +44,8 @@ corner.
 │   └── picorv32.v                  # PicoRV32 core RTL (from upstream)
 ├── config/
 │   ├── config_50mhz.json           # OpenLane config, 50MHz target (CLOCK_PERIOD 20)
-│   └── config_100mhz.json          # OpenLane config, 100MHz target (CLOCK_PERIOD 10)
+│   ├── config_100mhz.json          # OpenLane config, 100MHz target (CLOCK_PERIOD 10)
+│   └── config_100mhz_antenna.json  # 100MHz + heuristic diode insertion (antenna repair)
 ├── layout/
 │   ├── picorv32_layout_50mhz.png   # Final layout, 50MHz run
 │   └── picorv32_layout_100mhz.png  # Final layout, 100MHz run
@@ -63,8 +64,10 @@ corner.
 - [x] Multi-corner Static Timing Analysis (min/max/nominal) — setup and hold met
 - [x] GDSII streamout (Magic + KLayout, cross-checked with 0 XOR differences)
 - [x] DRC and LVS — clean
-- [x] IR drop analysis (VPWR / VGND reports generated)
-- [ ] Antenna — signoff still reports ~110 antenna violations per run (see Next steps)
+- [x] IR drop analysis (VPWR / VGND reports generated; no voltage-source locations
+      were defined, so the values are indicative only)
+- [ ] Antenna — reduced from 110 to 16 violations with diode insertion; 8 metal-1
+      nets remain (see "Antenna repair" below)
 
 ## Final layouts
 
@@ -122,6 +125,36 @@ worst path there.
 Reported power also doubled from the 50 MHz to the 100 MHz run with an identical
 netlist, consistent with dynamic power scaling linearly with frequency.
 
+## Antenna repair
+
+Signoff on the original 100 MHz run reported 56 pin and 54 net antenna violations.
+An antenna violation happens when a long metal wire is connected to a transistor
+gate before the net is connected to its driver: during fabrication, plasma etching
+charges the wire, and that charge can discharge through the thin gate oxide and
+damage it. The rule is a ratio limit on metal area to gate area.
+
+I tried two repair settings on the 100 MHz design:
+
+| Run | Settings | Antenna (pin / net) | Diode cells | Timing |
+|---|---|---|---|---|
+| Original | default | 56 / 54 | 215 | met (worst slack 3.02 ns) |
+| Repair 1 | `RUN_HEURISTIC_DIODE_INSERTION` | **8 / 8** | 9,075 | met |
+| Repair 2 | Repair 1 + `GRT_ANTENNA_ITERS: 10`, `HEURISTIC_ANTENNA_THRESHOLD: 60` | 8 / 8 | 10,115 | met (worst slack 2.88 ns) |
+
+**Result:** diode insertion cut antenna violations by 86%. The more aggressive
+settings in Repair 2 added about 1,000 more diodes and fixed nothing, so I kept the
+Repair 1 configuration (`config/config_100mhz_antenna.json`): same result, less
+area and less added capacitance.
+
+**What the remaining 8 are:** all on metal 1, one at 3.4× the allowed ratio and the
+other seven at 1.15–1.67×. These need targeted fixes (a diode or a layer-hopping
+jumper on those specific nets) rather than global settings.
+
+**Timing cost:** the extra diodes add capacitance. In Repair 2, the ALU path
+arrival moved from 8.02 to 8.14 ns, and the worst-slack path became a
+register-to-output path (`mem_la_addr[6]`) because the 2 ns output delay constraint
+leaves it less budget. Timing still closed with positive setup and hold slack.
+
 ## Challenges and how I solved them
 
 **Generating a layout preview image without a GUI.** OpenLane didn't auto-generate
@@ -140,8 +173,7 @@ area-optimized synthesis — to get a clean baseline first. That baseline confir
 the environment and design were sound before pushing the clock target further.
 
 ## Next steps
-- Clear the remaining antenna violations by rerunning with heuristic diode
-  insertion enabled (`RUN_HEURISTIC_DIODE_INSERTION`).
+- Fix the remaining 8 metal-1 antenna violations with targeted diodes or jumpers.
 - Compare slack at the slow corner, not just typical, before quoting a final Fmax.
 - Try a delay-oriented synthesis strategy and measure the area vs. timing trade-off
   on the ALU path.
